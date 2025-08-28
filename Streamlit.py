@@ -80,7 +80,7 @@ if input_type == "Image":
         if isinstance(result, str):
             st.success(result)
         else:
-            st.image(result, channels="RGB")
+            st.image(result, channels="BGR")
 
 # ------------------------
 # 🔹 VIDEO INPUT
