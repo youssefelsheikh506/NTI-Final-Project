@@ -98,48 +98,76 @@ elif input_type == "Video":
 
         st.subheader("Processing Video...")
 
-        # Temporary output path
-        temp_output = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+        # Save output to fixed filename on disk for debugging
+        output_path = "processed_output.mp4"
         cap = cv2.VideoCapture(tfile.name)
 
+        if not cap.isOpened():
+            st.error("❌ Failed to open uploaded video.")
+            st.stop()
+
         fps = cap.get(cv2.CAP_PROP_FPS)
-        width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(temp_output.name, fourcc, fps, (width, height))
+        out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+
+        if not out.isOpened():
+            st.error("❌ Failed to initialize video writer.")
+            st.stop()
 
         frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         progress = st.progress(0)
 
         count = 0
-        while True:
+        debug_frame_written = False
 
+        while True:
             ret, frame = cap.read()
             if not ret:
                 break
 
-            # Run model
-            result = run_model_on_image(frame)
+            try:
+                result = run_model_on_image(frame)
 
-            if isinstance(result, np.ndarray):
-                processed_frame = cv2.resize(result, (width, height))
-                processed_frame = cv2.cvtColor(processed_frame, cv2.COLOR_RGB2BGR)
-            else:
-                # Fallback: just write original frame
+                if isinstance(result, np.ndarray):
+                    if result.shape[:2] != (height, width):
+                        result = cv2.resize(result, (width, height))
+
+                    processed_frame = result  # Already BGR
+
+                    if processed_frame.dtype != np.uint8:
+                        processed_frame = np.clip(processed_frame, 0, 255).astype(np.uint8)
+
+                    if not debug_frame_written:
+                        cv2.imwrite("debug_frame.jpg", processed_frame)
+                        debug_frame_written = True
+                else:
+                    st.warning(f"⚠️ Frame {count} result invalid, using original.")
+                    processed_frame = frame
+
+            except Exception as e:
+                st.warning(f"⚠️ Error processing frame {count}: {e}")
                 processed_frame = frame
 
             out.write(processed_frame)
-
             count += 1
             progress.progress(min(count / frame_count, 1.0))
 
         cap.release()
         out.release()
 
-        st.success("Video processed!")
+        st.success(f"✅ Video processed and saved to {output_path}!")
+
         st.subheader("Processed Video:")
-        st.video(temp_output.name)
+
+        with open(output_path, "rb") as f:
+            video_bytes = f.read()
+
+        st.video(video_bytes)
+
+
 
 # ------------------------
 # 🔹 CAMERA INPUT
