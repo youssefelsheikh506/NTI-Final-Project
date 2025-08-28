@@ -38,28 +38,17 @@ preprocess = transforms.Compose([
 
 def run_model_on_image(img):
     """
-    Takes an OpenCV image (BGR), converts to RGB, preprocesses, runs the model,
-    and returns processed output or prediction.
+    Takes an OpenCV BGR image, runs YOLOv8 model inference using Ultralytics,
+    and returns the image with bounding boxes drawn.
     """
-    # Convert to RGB for PIL
-    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    input_tensor = preprocess(img_rgb).unsqueeze(0)
+    # Run YOLO inference (Ultralytics handles RGB conversion internally)
+    results = model(img)
+    
+    # Get the first result and draw predictions on the image
+    annotated_img = results[0].plot()  # OpenCV BGR image with boxes/labels
+    annotated_rgb = cv2.cvtColor(annotated_img, cv2.COLOR_BGR2RGB)
+    return annotated_img
 
-    with torch.no_grad():
-        output = model(input_tensor)
-
-    # Handle output:
-    if isinstance(output, torch.Tensor) and output.ndim == 2:
-        # Example: Classification (batch_size x num_classes)
-        predicted_class = torch.argmax(output, dim=1).item()
-        return f"Predicted class: {predicted_class}"
-    elif isinstance(output, torch.Tensor) and output.ndim == 4:
-        # Example: Image output (e.g., autoencoder or segmentation)
-        output_img = output.squeeze(0).permute(1, 2, 0).numpy()
-        output_img = ((output_img + 1) * 127.5).astype(np.uint8)  # De-normalize
-        return output_img
-    else:
-        return "Unsupported model output."
 
 # ------------------------
 # 🔹 Streamlit UI
