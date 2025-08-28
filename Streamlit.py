@@ -1,4 +1,5 @@
 import streamlit as st
+from ultralytics import YOLO
 import cv2
 import numpy as np
 import tempfile
@@ -13,7 +14,8 @@ from PIL import Image
 
 @st.cache_resource
 def load_model():
-    model = torch.load("your_model.pth", map_location=torch.device('cpu'))
+# Load your model correctly
+    model = YOLO("transfer_yolo.pt")
     model.eval()
     return model
 
@@ -123,6 +125,7 @@ elif input_type == "Video":
 
         count = 0
         while True:
+
             ret, frame = cap.read()
             if not ret:
                 break
