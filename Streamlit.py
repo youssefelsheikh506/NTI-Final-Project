@@ -1,192 +1,158 @@
 import streamlit as st
-from ultralytics import YOLO
+import tempfile
 import cv2
 import numpy as np
-import tempfile
-import os
-import torch
-from torchvision import transforms
-from PIL import Image
+import pickle
+from ultralytics import YOLO
+from tensorflow.keras.models import load_model
 
-# ------------------------
-# 🔹 Load your PyTorch model
-# ------------------------
-
+# ======================================================
+# 🔹 Load Models
+# ======================================================
 @st.cache_resource
-def load_model():
-# Load your model correctly
-    model = YOLO("transfer_yolo.pt")
-    model.eval()
-    return model
+def load_all_models():
+    fer_model = YOLO("transfer_yolo.pt")              # Emotion detection YOLO
+    pose_model = YOLO("yolo11n-pose.pt")   # YOLO11n Pose
+    clf_model = load_model("abdo model\Pose_Correction_Model.keras")  # Classifier
+    with open("scaler.pkl", "rb") as f:
+        scaler = pickle.load(f)
+    return fer_model, pose_model, clf_model, scaler
 
-model = load_model()
+fer_model, pose_model, clf_model, scaler = load_all_models()
+labels_map = {0: "Healthy", 1: "Unhealthy"}
 
-# ------------------------
-# 🔹 Preprocessing function
-# ------------------------
+# ======================================================
+# 🔹 Helper Functions
+# ======================================================
+def extract_keypoints(results, num_points=7):
+    """Extract first num_points keypoints from YOLO pose results."""
+    if results and results[0].keypoints is not None:
+        keypoints = results[0].keypoints.xy.cpu().numpy()  # (1, total_points, 2)
+        if keypoints.shape[1] >= num_points:
+            selected = keypoints[0, :num_points, :]
+            return selected.flatten().reshape(1, -1)
+    return None
 
-preprocess = transforms.Compose([
-    transforms.ToPILImage(),
-    transforms.Resize((224, 224)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.5]*3, std=[0.5]*3)  # Assuming RGB input
-])
+def predict_health_from_pose(frame, pose_results):
+    """Predict Healthy/Unhealthy using pose keypoints + classifier."""
+    keypoints = extract_keypoints(pose_results, num_points=7)
+    if keypoints is not None:
+        keypoints_scaled = scaler.transform(keypoints)
+        prob = clf_model.predict(keypoints_scaled, verbose=0)[0, 0]
+        if prob > 0.5:
+            return labels_map[1], prob
+        else:
+            return labels_map[0], 1 - prob
+    return "No person", 0.0
 
-# ------------------------
-# 🔹 Model inference function
-# ------------------------
+def draw_pose_only(frame, results):
+    """Draw ONLY keypoints and skeletons (no detection boxes)."""
+    if results and results[0].keypoints is not None:
+        kpts = results[0].keypoints.xy.cpu().numpy()[0]
+        for (x, y) in kpts:
+            cv2.circle(frame, (int(x), int(y)), 4, (0, 255, 0), -1)
+    return frame
 
-def run_model_on_image(img):
+def run_models(frame):
     """
-    Takes an OpenCV BGR image, runs YOLOv8 model inference using Ultralytics,
-    and returns the image with bounding boxes drawn.
+    Run FER + Pose on frame and return:
+    1. The annotated frame with FER + keypoints
+    2. The predicted health label (string)
+    3. The prediction confidence (float)
     """
-    # Run YOLO inference (Ultralytics handles RGB conversion internally)
-    results = model(img)
-    
-    # Get the first result and draw predictions on the image
-    annotated_img = results[0].plot()  # OpenCV BGR image with boxes/labels
-    annotated_rgb = cv2.cvtColor(annotated_img, cv2.COLOR_BGR2RGB)
-    return annotated_img
+    # ---------------- FER ----------------
+    fer_results = fer_model(frame, verbose=False)
+    frame_with_fer = fer_results[0].plot()  # draw boxes + emotion labels
+
+    # ---------------- Pose ----------------
+    pose_results = pose_model(frame, verbose=False)
+    annotated = draw_pose_only(frame_with_fer, pose_results)
+
+    # ---------------- Health Classification ----------------
+    label, conf = predict_health_from_pose(frame, pose_results)
+
+    return annotated, label, conf
 
 
-# ------------------------
+
+# ======================================================
 # 🔹 Streamlit UI
-# ------------------------
+# ======================================================
+st.set_page_config(page_title="FER + Pose + Health", layout="centered")
+st.title("🧠 Emotion + Pose + Health Classification")
 
-st.set_page_config(page_title="Model-Powered Media Processor", layout="centered")
-st.title("🧠 Model Inference on Images and Video")
-st.write("Upload an image, video, or use your webcam. The model will process it and return output.")
+option = st.radio("Choose input source:", ("Upload Image", "Upload Video", "Use Webcam"))
 
-input_type = st.radio("Choose input type:", ("Image", "Video", "Camera"))
-
-# ------------------------
-# 🔹 IMAGE INPUT
-# ------------------------
-
-if input_type == "Image":
+# ------------------ IMAGE ------------------
+if option == "Upload Image":
     uploaded_image = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
-
     if uploaded_image is not None:
         file_bytes = np.asarray(bytearray(uploaded_image.read()), dtype=np.uint8)
         img = cv2.imdecode(file_bytes, 1)
 
-        st.subheader("Original Image:")
+        st.subheader("Original Image")
         st.image(img, channels="BGR")
 
-        st.subheader("Model Output:")
-        result = run_model_on_image(img)
+        annotated, label, conf = run_models(img)
 
-        if isinstance(result, str):
-            st.success(result)
-        else:
-            st.image(result, channels="BGR")
+        st.subheader("FER + Pose Result:")
+        st.image(annotated, channels="BGR")
+        st.markdown(f"### 🏥 Health Prediction: **{label}**")
 
-# ------------------------
-# 🔹 VIDEO INPUT
-# ------------------------
+# ------------------ VIDEO ------------------
+elif option == "Upload Video":
+    uploaded_file = st.file_uploader("Upload a video", type=["mp4", "avi", "mov"])
+    if uploaded_file is not None:
+        # Save to temp file
+        tfile = tempfile.NamedTemporaryFile(delete=False)
+        tfile.write(uploaded_file.read())
 
-elif input_type == "Video":
-    uploaded_video = st.file_uploader("Upload a video", type=["mp4", "avi", "mov"])
-
-    if uploaded_video is not None:
-        tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-        tfile.write(uploaded_video.read())
-
-        st.subheader("Original Video:")
-        st.video(tfile.name)
-
-        st.subheader("Processing Video...")
-
-        # Save output to fixed filename on disk for debugging
-        output_path = "processed_output.mp4"
         cap = cv2.VideoCapture(tfile.name)
 
-        if not cap.isOpened():
-            st.error("❌ Failed to open uploaded video.")
-            st.stop()
+        stframe = st.empty()
+        text_placeholder = st.empty()
 
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-
-        if not out.isOpened():
-            st.error("❌ Failed to initialize video writer.")
-            st.stop()
-
-        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        progress = st.progress(0)
-
-        count = 0
-        debug_frame_written = False
-
-        while True:
+        while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
                 break
 
-            try:
-                result = run_model_on_image(frame)
+            # Run both models (FER + Pose + Health classifier)
+            annotated, label, conf = run_models(frame)
 
-                if isinstance(result, np.ndarray):
-                    if result.shape[:2] != (height, width):
-                        result = cv2.resize(result, (width, height))
+            # Convert for display
+            annotated_rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
+            stframe.image(annotated_rgb, channels="RGB", use_container_width=True)
 
-                    processed_frame = result  # Already BGR
-
-                    if processed_frame.dtype != np.uint8:
-                        processed_frame = np.clip(processed_frame, 0, 255).astype(np.uint8)
-
-                    if not debug_frame_written:
-                        cv2.imwrite("debug_frame.jpg", processed_frame)
-                        debug_frame_written = True
-                else:
-                    st.warning(f"⚠️ Frame {count} result invalid, using original.")
-                    processed_frame = frame
-
-            except Exception as e:
-                st.warning(f"⚠️ Error processing frame {count}: {e}")
-                processed_frame = frame
-
-            out.write(processed_frame)
-            count += 1
-            progress.progress(min(count / frame_count, 1.0))
+            # Show prediction in Streamlit (not in frame)
+            text_placeholder.markdown(f"### 🏥 Health Prediction: **{label}**")
 
         cap.release()
-        out.release()
-
-        st.success(f"✅ Video processed and saved to {output_path}!")
-
-        st.subheader("Processed Video:")
-
-        with open(output_path, "rb") as f:
-            video_bytes = f.read()
-
-        st.video(video_bytes)
 
 
+# ------------------ WEBCAM ------------------
+elif option == "Use Webcam":
+    st.warning("Click 'Stop' to end the webcam stream.")
+    run = st.checkbox("Start Webcam")
+    stframe = st.empty()
+    text_placeholder = st.empty()
 
-# ------------------------
-# 🔹 CAMERA INPUT
-# ------------------------
+    cap = cv2.VideoCapture(0)
 
-elif input_type == "Camera":
-    captured_image = st.camera_input("Take a photo")
+    while run:
+        ret, frame = cap.read()
+        if not ret:
+            st.error("Failed to capture webcam feed")
+            break
 
-    if captured_image is not None:
-        file_bytes = np.asarray(bytearray(captured_image.read()), dtype=np.uint8)
-        img = cv2.imdecode(file_bytes, 1)
+        # Run both models (FER + Pose + Health classifier)
+        annotated, label, conf = run_models(frame)
 
-        st.subheader("Captured Image:")
-        st.image(img, channels="BGR")
+        # Convert for display
+        annotated_rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
+        stframe.image(annotated_rgb, channels="RGB", use_container_width=True)
 
-        st.subheader("Model Output:")
-        result = run_model_on_image(img)
+        # Show prediction in Streamlit (not in frame)
+        text_placeholder.markdown(f"### 🏥 Health Prediction: **{label}**")
 
-        if isinstance(result, str):
-            st.success(result)
-        else:
-            st.image(result, channels="RGB")
+    cap.release()
