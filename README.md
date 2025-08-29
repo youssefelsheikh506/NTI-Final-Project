@@ -31,5 +31,5 @@ A computer vision project that detects a person's **emotion** and evaluates thei
 ### 1. Clone the repo
 
 ```bash
-git clone https://github.com/yourusername/emotion-posture-detector.git
+git clone https://github.com/yourusername/emotion-posture-detector.git](https://github.com/youssefelsheikh506/NTI-Final-Project)
 cd emotion-posture-detector
